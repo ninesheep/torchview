@@ -255,6 +255,7 @@ class RecorderTensor(torch.Tensor):
         )
         cur_node = FunctionNode(
             func, cur_depth, args_nodes, name=func_name  # type: ignore[arg-type]
+            ,args=args, kwargs=kwargs
         )
 
         for i in args_nodes:

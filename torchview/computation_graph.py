@@ -92,6 +92,11 @@ class ComputationGraph:
         }
         self.reset_graph_history()
 
+        self.node_name_set = set()
+        self.op_info = {}
+
+
+
     def reset_graph_history(self) -> None:
         '''Resets to id config to the setting of empty visual graph
         needed for getting reproducible/deterministic node name and
@@ -355,6 +360,170 @@ class ComputationGraph:
         if node.node_id not in self.id_dict:
             self.id_dict[node.node_id] = self.running_node_id
             self.running_node_id += 1
+
+            if node.name not in ["clone", "__eq__", "__getitem__", "input-tensor", "output-tensor", "contiguous", "masked_fill", "__invert__", "neg", "all", "gt"]:
+                self.node_name_set.add(node.name)
+
+                if node.name in ["Linear"]:
+                    weight_shape = node.origin_node.weight.shape
+                    params_cnt = 1
+                    for x in weight_shape:
+                        params_cnt = params_cnt * x
+                    if node.origin_node.bias is not None:
+                        bias_shape = node.origin_node.bias.shape
+                        s = 1
+                        for x in bias_shape:
+                            s = s * x
+                        params_cnt = params_cnt + s
+                    
+                    params_cnt = params_cnt * 2
+
+                    c_size = 1
+                    input_shape = node.input_shape[0]
+                    for x in input_shape:
+                        c_size = c_size * x
+
+                    c_size = c_size * node.origin_node.out_features
+                    c_size = c_size * 2
+
+                    if node.name in self.op_info:
+                        pre_info = self.op_info[node.name]
+                        self.op_info[node.name] = [pre_info[0] + params_cnt, pre_info[1] + c_size]
+                    else:
+                        self.op_info[node.name] = [params_cnt, c_size]
+
+                if node.name in ["mul", "mul_", "add", "div"]:
+                    output_shape = node.output_shape[0]
+                    c_size = 1
+                    for x in output_shape:
+                        c_size = c_size * x
+                    c_size = c_size *2
+                    if node.name in ["mul", "mul_"]:
+                        name = "mul"
+                    else:
+                        name = node.name
+                    if name in self.op_info:
+                        pre_info = self.op_info[name]
+                        self.op_info[name] = [pre_info[0] + 0, pre_info[1] + c_size]
+                    else:
+                        self.op_info[name] = [0, c_size]
+
+                if node.name in ["Embedding"]:
+                    weight_shape = node.origin_node.weight.shape
+                    params_cnt = 1
+                    for x in weight_shape:
+                        params_cnt = params_cnt * x
+                    params_cnt = params_cnt * 2
+                    self.op_info[node.name] = [params_cnt, 0]
+
+                if node.name in ["scaled_dot_product_attention"]:
+                    q_shape = node.args[0].shape
+                    k_shape = node.args[1].shape
+                    v_shape = node.args[2].shape
+                    total_matmul_c_size = 0
+                    matmul_c_size = 1
+                    for x in q_shape:
+                        matmul_c_size = matmul_c_size * x
+                    matmul_c_size = matmul_c_size * k_shape[-2]
+
+                    total_matmul_c_size = total_matmul_c_size + matmul_c_size
+                    matmul_c_size = 1
+                    for x in q_shape[:-1]:
+                        matmul_c_size = matmul_c_size * x
+                    matmul_c_size = matmul_c_size * k_shape[-2]
+                    matmul_c_size = matmul_c_size * v_shape[-1]
+                    total_matmul_c_size = total_matmul_c_size + matmul_c_size
+                    
+                    c_size = total_matmul_c_size * 2
+                    if "matmul" in self.op_info:
+                        pre_info = self.op_info["matmul"]
+                        self.op_info["matmul"] = [pre_info[0] + 0, pre_info[1] + c_size]
+                    else:
+                        self.op_info["matmul"] = [0, c_size]
+
+                if node.name in ["LlamaRotaryEmbedding", "triu"]:
+                    pass
+
+                if node.name in ["LlamaRMSNorm", "GroupNorm", "LayerNorm"]:
+                    weight_size = 0
+                    if node.origin_node.weight is not None:
+                        weight_size = node.origin_node.weight.shape[0] * 2
+
+                    if node.name != "LlamaRMSNorm" and node.origin_node.bias is not None:
+                        weight_size = weight_size + node.origin_node.bias.shape[0] * 2
+
+                    params_cnt = weight_size * 2
+                    if node.name in self.op_info:
+                        pre_info = self.op_info[node.name ]
+                        self.op_info[node.name ] = [pre_info[0] + params_cnt, 0]
+                    else:
+                        self.op_info[node.name] = [params_cnt, 0]
+
+                if node.name == "Conv2d":
+                    # no_bias: 2 * CIN * K * K *COUT * W * H - COUT * H * W
+                    # with_bias: 2 *CIN * K * K * COUT * W *H
+                    cin = node.origin_node.in_channels
+                    cout = node.origin_node.out_channels
+                    k0, k1 = node.origin_node.kernel_size
+                    s0, s1 = node.origin_node.stride
+                    weight_shape = node.origin_node.weight.shape
+                    params_cnt = 0
+                    p=1
+                    for x in weight_shape:
+                        p = p*x
+                    params_cnt = params_cnt + p
+
+                    t,h =node.input_shape[0][2:]
+                    c_size = 2 * cin*k0*k1*cout*h*w
+
+                    if node.origin_node.bias is not None:
+                        p=1
+                        bias_shape = node.origin_node.bias.shape
+                        for x in bias_shape:
+                            p = p*x
+                        params_cnt = params_cnt + p
+                        c_size = c_size - cout*h*w
+
+                    if node.name in self.op_info:
+                        pre_info = self.op_info[node.name ]
+                        self.op_info[node.name ] = [pre_info[0] + params_cnt, pre_info[1] + c_size]
+                    else:
+                        self.op_info[node.name] = [params_cnt, c_size]
+
+                if node.name == "Conv3d":
+                    # no_bias: 2 * CIN * K * K * K *COUT * W * H * T - COUT * H * W *T
+                    # with_bias: 2 *CIN * K * K * K * COUT * W *H *T
+                    cin = node.origin_node.in_channels
+                    cout = node.origin_node.out_channels
+                    k0, k1, k2 = node.origin_node.kernel_size
+                    s0, s1, s2 = node.origin_node.stride
+                    weight_shape = node.origin_node.weight.shape
+                    params_cnt = 0
+                    p=1
+                    for x in weight_shape:
+                        p = p*x
+                    params_cnt = params_cnt + p
+
+                    t,h,w =node.input_shape[0][2:]
+                    c_size = 2 * cin*k0*k1*k2*cout*t*h*w
+
+                    if node.origin_node.bias is not None:
+                        p=1
+                        bias_shape = node.origin_node.bias.shape
+                        for x in bias_shape:
+                            p = p*x
+                        params_cnt = params_cnt + p
+                        c_size = c_size - cout*h*w*t
+
+                    if node.name in self.op_info:
+                        pre_info = self.op_info[node.name ]
+                        self.op_info[node.name ] = [pre_info[0] + params_cnt, pre_info[1] + c_size]
+                    else:
+                        self.op_info[node.name] = [params_cnt, c_size]
+
+
+
+
         label = self.get_node_label(node)
         node_color = ComputationGraph.get_node_color(node)
 
@@ -438,6 +607,14 @@ class ComputationGraph:
         ), (
             f'tensor must have single input node {node}'
         )
+
+    def print_node_name(self):
+        for x in self.node_name_set:
+            print(x)
+
+    def print_weight_and_cp(self):
+        for name,info in self.op_info.items():
+            print(name, info[0], info[1])
 
 
 def compact_list_repr(x: list[Any]) -> str:

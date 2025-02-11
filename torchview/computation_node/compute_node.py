@@ -111,6 +111,8 @@ class FunctionNode(Node):
         parents: NodeContainer[Node] | Node | None = None,
         children: NodeContainer[Node] | Node | None = None,
         name: str = 'function-node',
+        args=None,
+        kwargs=None
     ) -> None:
         super(FunctionNode, self).__init__(
             depth, parents, children, name
@@ -121,6 +123,8 @@ class FunctionNode(Node):
         self.output_shape: list[Tuple[int, ...]] = []
         self.set_node_id()
         self.output_nodes = self.children
+        self.args=args
+        self.kwargs = kwargs
 
     def set_input_shape(self, input_shape: list[Tuple[int, ...]]) -> None:
         self.input_shape = input_shape
